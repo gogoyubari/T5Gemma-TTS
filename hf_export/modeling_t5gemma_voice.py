@@ -29,7 +29,7 @@ from transformers.models.t5gemma.modeling_t5gemma import (
 )
 
 try:
-    from configuration_t5gemma_voice import T5GemmaVoiceConfig
+    from .configuration_t5gemma_voice import T5GemmaVoiceConfig
 except ImportError:  # when executed inside the repo package
     from hf_export.configuration_t5gemma_voice import T5GemmaVoiceConfig
 
