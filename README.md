@@ -108,6 +108,17 @@ python inference_gradio.py \
 
 By default, XCodec2-Variant (NandemoGHS/Anime-XCodec2-44.1kHz-v2) is used for audio decoding to better support Japanese voices. For English and Chinese voices, I recommend using the original XCodec2 model.
 
+```bash
+# You must use the original xcodec2 library when using the original XCodec2 model
+pip install xcodec2==0.1.5 --no-deps
+
+python inference_gradio.py \
+    --model_dir t5gemma_voice_hf \
+    --xcodec2_model_name HKUSTAudio/xcodec2 \
+    --xcodec2_sample_rate 16000 \
+    --port 7860
+```
+
 ### Docker (Recommended for Windows users)
 
 If you experience issues on Windows, Docker provides a stable Linux environment:
@@ -137,17 +148,6 @@ PORT=8080 docker compose up
 
 # Pass additional arguments
 EXTRA_ARGS="--no_compile --share" docker compose up
-```
-
-```bash
-# You must use the original xcodec2 library when using the original XCodec2 model
-pip install xcodec2==0.1.5 --no-deps
-
-python inference_gradio.py \
-    --model_dir t5gemma_voice_hf \
-    --xcodec2_model_name HKUSTAudio/xcodec2 \
-    --xcodec2_sample_rate 16000 \
-    --port 7860
 ```
 
 ### Inference Parameters
