@@ -15,6 +15,56 @@ import tqdm
 from data.tokenizer import AudioTokenizer, tokenize_audio
 from duration_estimator import detect_language
 
+
+# ==== PyTorch 2.9+ audio backend compatibility helpers ====
+# Starting with PyTorch 2.9, torchaudio internally depends on TorchCodec for
+# audio loading/saving operations. In environments where TorchCodec is
+# unavailable or incompatible (e.g., DGX Spark), these helpers provide a
+# soundfile-based fallback.
+
+def _torch_ge_29() -> bool:
+    """Return True if PyTorch version is >= 2.9."""
+    try:
+        v = torch.__version__.split("+")[0]
+        major, minor = map(int, v.split(".")[:2])
+        return (major, minor) >= (2, 9)
+    except Exception:
+        return False
+
+
+def get_audio_info(audio_path: str):
+    """
+    Get audio file info (sample rate).
+    Returns an object with `samplerate` attribute (soundfile style).
+    For PyTorch < 2.9, returns torchaudio.info result which has `sample_rate`.
+    """
+    if _torch_ge_29():
+        import soundfile as sf
+        return sf.info(audio_path)
+    else:
+        return torchaudio.info(audio_path)
+
+
+def get_sample_rate(info) -> int:
+    """Extract sample rate from audio info object (works for both backends)."""
+    if hasattr(info, "samplerate"):
+        return info.samplerate
+    return info.sample_rate
+
+
+def save_audio(path: str, waveform: torch.Tensor, sample_rate: int) -> None:
+    """
+    Save audio to file using appropriate backend.
+    For PyTorch >= 2.9, uses soundfile to avoid TorchCodec dependency.
+    """
+    if _torch_ge_29():
+        import soundfile as sf
+        # Ensure waveform is 1D or 2D numpy array
+        wav_np = waveform.squeeze().detach().cpu().numpy()
+        sf.write(path, wav_np, sample_rate)
+    else:
+        torchaudio.save(path, waveform, sample_rate)
+
 # Text normalization (only applied when language is Japanese)
 _REPLACE_MAP = {
     r"\t": "",

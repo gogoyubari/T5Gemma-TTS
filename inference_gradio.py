@@ -14,12 +14,16 @@ from typing import Optional, Tuple
 import gradio as gr
 import numpy as np
 import torch
-import torchaudio
 import whisper
 
 from data.tokenizer import AudioTokenizer
 from duration_estimator import estimate_duration
-from inference_tts_utils import inference_one_sample, normalize_text_with_lang
+from inference_tts_utils import (
+    inference_one_sample,
+    normalize_text_with_lang,
+    get_audio_info,
+    get_sample_rate,
+)
 
 try:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -199,8 +203,8 @@ def run_inference(
         target_generation_length = float(target_duration)
 
     if not no_reference_audio:
-        info = torchaudio.info(reference_speech)
-        prompt_end_frame = int(cut_off_sec * info.sample_rate)
+        info = get_audio_info(reference_speech)
+        prompt_end_frame = int(cut_off_sec * get_sample_rate(info))
     else:
         prompt_end_frame = 0
 

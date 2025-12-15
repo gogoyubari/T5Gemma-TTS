@@ -10,12 +10,17 @@ import random
 import fire
 import numpy as np
 import torch
-import torchaudio
 import whisper
 
 from data.tokenizer import AudioTokenizer
 from duration_estimator import estimate_duration
-from inference_tts_utils import inference_one_sample, normalize_text_with_lang
+from inference_tts_utils import (
+    inference_one_sample,
+    normalize_text_with_lang,
+    get_audio_info,
+    get_sample_rate,
+    save_audio,
+)
 
 try:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -135,8 +140,8 @@ def run_inference(
         target_generation_length = float(target_duration)
 
     if not no_reference_audio:
-        info = torchaudio.info(reference_speech)
-        prompt_end_frame = int(cut_off_sec * info.sample_rate)
+        info = get_audio_info(reference_speech)
+        prompt_end_frame = int(cut_off_sec * get_sample_rate(info))
     else:
         prompt_end_frame = 0
 
@@ -179,7 +184,7 @@ def run_inference(
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "generated.wav")
-    torchaudio.save(out_path, gen_audio, codec_audio_sr)
+    save_audio(out_path, gen_audio, codec_audio_sr)
 
     max_abs = torch.max(gen_audio.abs()).item()
     rms = torch.sqrt((gen_audio ** 2).mean()).item()

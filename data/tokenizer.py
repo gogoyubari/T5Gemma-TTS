@@ -95,6 +95,8 @@ def tokenize_audio(tokenizer: AudioTokenizer, audio_path: str, offset = -1, num_
         wav, sr = torchaudio.load(audio_path)
     target_sr = getattr(tokenizer, "encode_sample_rate", tokenizer.sample_rate)
     if sr != target_sr:
+        # Ensure float32 for torchaudio resample (avoids Float vs Double mismatch in PyTorch 2.9+)
+        wav = wav.to(dtype=torch.float32)
         wav = torchaudio.transforms.Resample(sr, target_sr)(wav)
         sr = target_sr
     if wav.shape[0] == 2:
