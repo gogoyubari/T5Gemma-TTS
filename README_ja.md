@@ -117,6 +117,14 @@ python inference_gradio.py \
     --port 7860
 ```
 
+#### 低VRAM向けオプション（Gradio / HF推論）
+
+- `--cpu_codec`: XCodec2トークナイザをCPUに載せる。VRAM使用量を約**3.5GB**削減（エンコード／デコードは遅くなる）。
+- `--cpu_whisper`: Whisper（参照音声を自動書き起こしする場合）をCPUに載せる。VRAM使用量を約**5GB**削減。書き起こしは少し遅くなる。
+- `--low_vram`: 上記2つをまとめて有効化し、`torch.compile`を無効化するプリセット。
+
+品質は変わらず、GPUメモリと速度のトレードオフだけが変わります。
+
 ### Docker（Windowsユーザー向け推奨）
 
 Windowsで問題が発生する場合、Dockerを使用することで安定したLinux環境で実行できます：

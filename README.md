@@ -119,6 +119,14 @@ python inference_gradio.py \
     --port 7860
 ```
 
+#### Low-VRAM options (Gradio / HF inference)
+
+- `--cpu_codec`: run XCodec2 tokenizer on CPU. Reduces VRAM use by roughly **3.5 GB**; audio encode/decode becomes slower.
+- `--cpu_whisper`: run Whisper (auto-transcribe path) on CPU. Reduces VRAM use by roughly **5 GB**; transcription slows down.
+- `--low_vram`: preset that enables both flags and disables `torch.compile`.
+
+These switches don’t change model quality; they only trade GPU memory for a bit of latency on first runs.
+
 ### Docker (Recommended for Windows users)
 
 If you experience issues on Windows, Docker provides a stable Linux environment:

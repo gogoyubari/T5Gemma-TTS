@@ -54,15 +54,22 @@ def seed_everything(seed: Optional[int]) -> int:
 # Model / tokenizer loaders (cached)
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=1)
-def _get_whisper_model():
+@lru_cache(maxsize=2)
+def _get_whisper_model(device: str):
     """Cache Whisper model to avoid reloading on every inference."""
-    print("[Info] Loading Whisper model (large-v3-turbo)...")
-    return whisper.load_model("large-v3-turbo")
+    print(f"[Info] Loading Whisper model (large-v3-turbo) on {device}...")
+    return whisper.load_model("large-v3-turbo", device=device)
 
 
 @lru_cache(maxsize=1)
-def _load_resources(model_dir: str, xcodec2_model_name: Optional[str], xcodec2_sample_rate: Optional[int], use_torch_compile: bool):
+def _load_resources(
+    model_dir: str,
+    xcodec2_model_name: Optional[str],
+    xcodec2_sample_rate: Optional[int],
+    use_torch_compile: bool,
+    cpu_codec: bool,
+    whisper_device: str,
+):
     """Load model and tokenizers from HF-format directory or repo."""
     if AutoModelForSeq2SeqLM is None or AutoTokenizer is None:
         raise ImportError("Please install transformers before running the demo.")
@@ -83,12 +90,18 @@ def _load_resources(model_dir: str, xcodec2_model_name: Optional[str], xcodec2_s
 
     audio_tokenizer = AudioTokenizer(
         backend="xcodec2",
+        device=torch.device("cpu") if cpu_codec else torch.device(device),
         model_name=xcodec2_model_name,
         sample_rate=xcodec2_sample_rate,
     )
 
     # Apply torch.compile for faster inference (2nd run onwards)
-    if use_torch_compile and torch.cuda.is_available():
+    can_compile = (
+        use_torch_compile
+        and torch.cuda.is_available()
+        and not cpu_codec
+    )
+    if can_compile:
         print("[Info] Applying torch.compile to model and codec (this may take a minute on first inference)...")
         try:
             model = torch.compile(model, mode="reduce-overhead")
@@ -110,6 +123,7 @@ def _load_resources(model_dir: str, xcodec2_model_name: Optional[str], xcodec2_s
         "device": device,
         "codec_audio_sr": codec_audio_sr,
         "codec_sr": codec_sr,
+        "whisper_device": whisper_device,
     }
 
 
@@ -159,7 +173,7 @@ def run_inference(
         prefix_transcript = ""
     elif not has_reference_text:
         print("[Info] No reference text; transcribing reference speech with Whisper (large-v3-turbo).")
-        wh_model = _get_whisper_model()
+        wh_model = _get_whisper_model(resources["whisper_device"])
         result = wh_model.transcribe(reference_speech)
         prefix_transcript = result["text"]
         print(f"[Info] Whisper transcription: {prefix_transcript}")
@@ -342,12 +356,29 @@ def main():
     parser.add_argument("--model_dir", type=str, default="./t5gemma_voice_hf", help="HF model directory or repo id")
     parser.add_argument("--xcodec2_model_name", type=str, default=None, help="Override xcodec2 model name from config")
     parser.add_argument("--xcodec2_sample_rate", type=int, default=None, help="Override xcodec2 sample rate from config")
+    parser.add_argument("--cpu_whisper", action="store_true", help="Run Whisper transcription on CPU to save VRAM")
+    parser.add_argument("--cpu_codec", action="store_true", help="Run XCodec2 tokenizer on CPU to save VRAM")
+    parser.add_argument("--low_vram", action="store_true", help="Preset: cpu_whisper + cpu_codec")
     parser.add_argument("--port", type=int, default=7860, help="Gradio server port")
     parser.add_argument("--share", action="store_true", help="Enable Gradio share link")
     parser.add_argument("--no_compile", action="store_true", help="Disable torch.compile (faster startup, slower inference)")
     args = parser.parse_args()
 
-    resources = _load_resources(args.model_dir, args.xcodec2_model_name, args.xcodec2_sample_rate, use_torch_compile=not args.no_compile)
+    if args.low_vram:
+        args.cpu_whisper = True
+        args.cpu_codec = True
+        args.no_compile = True
+
+    whisper_device = "cpu" if (args.cpu_whisper or args.low_vram) else ("cuda" if torch.cuda.is_available() else "cpu")
+
+    resources = _load_resources(
+        args.model_dir,
+        args.xcodec2_model_name,
+        args.xcodec2_sample_rate,
+        use_torch_compile=not args.no_compile,
+        cpu_codec=args.cpu_codec,
+        whisper_device=whisper_device,
+    )
     build_demo(resources=resources, server_port=args.port, share=args.share)
 
 
