@@ -31,6 +31,7 @@ from inference_tts_utils import (
     transcribe_audio,
 )
 from similarity_and_distance import find_similarity_and_distance
+from compare_audio_features import compare_with_reference_set
 
 try:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -227,62 +228,81 @@ def extract_audio_segment(
 def select_best_sample(
     samples: List[np.ndarray],
     target_text: str,
+    reference_audio_path: str,
     sample_rate: int,
     whisper_device: str = "cuda",
     tmpdir: str = "/tmp",
+    top_k_voice: int = 5,
 ) -> tuple:
     """
-    複数の生成サンプルから最適なものを選択する。
+    複数の生成サンプルから最適なものを選択する（2段階フィルタリング）。
 
     選択基準:
-    1. Whisper で逆起こし → target_text との類似度 (Levenshtein ratio)
-    2. RMS (音量) - 小さすぎるものは除外
+    1. MFCC距離で声質が近い上位 top_k_voice 本を選択
+    2. Whisper で逆起こし → target_text との Levenshtein 類似度でベストを選択
 
     Returns:
         (best_sample, best_index, best_transcript, best_similarity, best_rms)
     """
-    candidates = []
+    # Stage 1: Save all samples and calculate MFCC distance
+    print(f"    [Stage 1] Calculating MFCC distance for {len(samples)} samples...")
+    voice_candidates = []
 
     for i, sample in enumerate(samples):
-        # RMS 計算
-        rms = float(np.sqrt(np.mean(sample ** 2)))
-
-        # 一時ファイルに保存して Whisper で transcribe
         tmp_path = os.path.join(tmpdir, f"sample_{i}.wav")
         sf.write(tmp_path, sample, sample_rate, subtype='PCM_16')
 
         try:
-            transcript = transcribe_audio(tmp_path, whisper_device)
+            mfcc_distance = compare_with_reference_set(reference_audio_path, tmp_path)
         except Exception as e:
-            print(f"    [Warning] Transcribe failed for sample {i}: {e}")
-            transcript = ""
+            print(f"    [Warning] MFCC comparison failed for sample {i}: {e}")
+            mfcc_distance = float('inf')
 
-        # 類似度計算 (Levenshtein ratio)
-        similarity, _ = find_similarity_and_distance(target_text, transcript)
+        rms = float(np.sqrt(np.mean(sample ** 2)))
 
-        candidates.append({
+        voice_candidates.append({
             "index": i,
             "sample": sample,
-            "transcript": transcript,
-            "similarity": similarity,
+            "tmp_path": tmp_path,
+            "mfcc_distance": mfcc_distance,
             "rms": rms,
         })
 
-        print(f"    Sample {i+1}: similarity={similarity:.3f}, rms={rms:.4f}")
+        print(f"    Sample {i+1}: mfcc_distance={mfcc_distance:.4f}, rms={rms:.4f}")
+
+    # Sort by MFCC distance (ascending) and select top_k_voice
+    voice_candidates.sort(key=lambda c: c["mfcc_distance"])
+    top_voice_candidates = voice_candidates[:top_k_voice]
+
+    print(f"    -> Top {top_k_voice} by voice quality: {[c['index']+1 for c in top_voice_candidates]}")
+
+    # Stage 2: Transcribe top candidates and calculate Levenshtein similarity
+    print(f"    [Stage 2] Transcribing top {len(top_voice_candidates)} samples...")
+    text_candidates = []
+
+    for c in top_voice_candidates:
+        try:
+            transcript = transcribe_audio(c["tmp_path"], whisper_device)
+        except Exception as e:
+            print(f"    [Warning] Transcribe failed for sample {c['index']}: {e}")
+            transcript = ""
+
+        similarity, _ = find_similarity_and_distance(target_text, transcript)
+
+        text_candidates.append({
+            **c,
+            "transcript": transcript,
+            "similarity": similarity,
+        })
+
+        print(f"    Sample {c['index']+1}: similarity={similarity:.3f}")
         print(f"             transcript: {transcript[:60]}...")
 
-    # RMS が極端に小さいものを除外 (閾値: 最大RMSの10%以下)
-    max_rms = max(c["rms"] for c in candidates)
-    valid_candidates = [c for c in candidates if c["rms"] >= max_rms * 0.1]
+    # Sort by Levenshtein similarity (descending)
+    text_candidates.sort(key=lambda c: -c["similarity"])
 
-    if not valid_candidates:
-        valid_candidates = candidates  # fallback
-
-    # 類似度でソート (高い方が良い)、同点ならRMSが高い方を優先
-    valid_candidates.sort(key=lambda c: (-c["similarity"], -c["rms"]))
-
-    best = valid_candidates[0]
-    print(f"    -> Selected sample {best['index']+1} (similarity={best['similarity']:.3f}, rms={best['rms']:.4f})")
+    best = text_candidates[0]
+    print(f"    -> Selected sample {best['index']+1} (mfcc={best['mfcc_distance']:.4f}, similarity={best['similarity']:.3f})")
 
     return (
         best["sample"],
@@ -378,34 +398,34 @@ def run_tts_inference(
 
 def main():
     parser = argparse.ArgumentParser(description="SRT-based Voice Dubbing with T5Gemma-TTS")
-    parser.add_argument("--ja_srt", type=str, required=True, help="Japanese SRT file path")
-    parser.add_argument("--en_srt", type=str, required=True, help="English SRT file path")
-    parser.add_argument("--input_wav", type=str, required=True, help="Input vocals WAV path")
-    parser.add_argument("--output_wav", type=str, default=None, help="Output WAV path (default: <input_basename>_dubbed.wav)")
+    parser.add_argument("--reference_srt", type=str, required=True, help="Reference SRT file path")
+    parser.add_argument("--reference_voice", type=str, required=True, help="Reference WAV path")
+    parser.add_argument("--target_srt", type=str, required=True, help="Target SRT file path")
+    parser.add_argument("--output_voice", type=str, default=None, help="Output WAV path (default: <input_basename>_dubbed.wav)")
     parser.add_argument("--model_dir", type=str, default="t5gemma_voice_hf", help="TTS model directory")
     parser.add_argument("--xcodec2_model_name", type=str, default="HKUSTAudio/xcodec2", help="XCodec2 model name")
     parser.add_argument("--xcodec2_sample_rate", type=int, default=16000, help="XCodec2 sample rate")
     parser.add_argument("--cpu_codec", action="store_true", help="Run XCodec2 on CPU")
     parser.add_argument("--cpu_whisper", action="store_true", help="Run Whisper on CPU")
-    parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to generate per segment")
+    parser.add_argument("--num_samples", type=int, default=10, help="Number of samples to generate per segment")
     args = parser.parse_args()
 
     # Set default output_wav if not provided
-    if args.output_wav is None:
-        base = os.path.splitext(args.input_wav)[0]
-        args.output_wav = f"{base}_dubbed.wav"
+    if args.output_voice is None:
+        base = os.path.splitext(args.reference_voice)[0]
+        args.output_voice = f"{base}_dubbed.wav"
 
     # Parse SRT files
     print("[Info] Parsing SRT files...")
-    ja_segments = parse_srt(args.ja_srt)
-    en_segments = parse_srt(args.en_srt)
+    ref_segments = parse_srt(args.reference_srt)
+    tgt_segments = parse_srt(args.target_srt)
 
-    print(f"[Info] Found {len(ja_segments)} Japanese segments, {len(en_segments)} English segments")
+    print(f"[Info] Found {len(ref_segments)} Reference segments, {len(tgt_segments)} Target segments")
 
-    if len(ja_segments) != len(en_segments):
-        print(f"[Warning] Segment count mismatch! Using minimum: {min(len(ja_segments), len(en_segments))}")
+    if len(ref_segments) != len(tgt_segments):
+        print(f"[Warning] Segment count mismatch! Using minimum: {min(len(ref_segments), len(tgt_segments))}")
 
-    num_segments = min(len(ja_segments), len(en_segments))
+    num_segments = min(len(ref_segments), len(tgt_segments))
 
     # Load model
     resources = load_resources(
@@ -419,7 +439,7 @@ def main():
     output_sr = args.xcodec2_sample_rate  # 16000
 
     # Calculate total duration
-    total_duration = max(seg.end_time for seg in ja_segments[:num_segments])
+    total_duration = max(seg.end_time for seg in ref_segments[:num_segments])
     print(f"[Info] Total duration: {total_duration:.2f} seconds")
 
     # Create output buffer (silence)
@@ -429,22 +449,22 @@ def main():
     # Create temp directory for reference audio segments
     with tempfile.TemporaryDirectory() as tmpdir:
         for i in range(num_segments):
-            ja_seg = ja_segments[i]
-            en_seg = en_segments[i]
+            ref_seg = ref_segments[i]
+            tgt_seg = tgt_segments[i]
 
             print(f"\n[Info] Processing segment {i+1}/{num_segments}")
-            print(f"  Time: {ja_seg.start_time:.2f}s - {ja_seg.end_time:.2f}s")
-            print(f"  JA: {ja_seg.text[:50]}...")
-            print(f"  EN: {en_seg.text[:50]}...")
+            print(f"  Time: {ref_seg.start_time:.2f}s - {ref_seg.end_time:.2f}s")
+            print(f"  REF: {ref_seg.text[:50]}...")
+            print(f"  TGT: {tgt_seg.text[:50]}...")
 
-            target_duration = ja_seg.end_time - ja_seg.start_time
+            target_duration = ref_seg.end_time - ref_seg.start_time
 
             # Extract reference audio segment
             ref_audio_path = os.path.join(tmpdir, f"ref_{i:04d}.wav")
             extract_audio_segment(
-                input_wav=args.input_wav,
-                start_time=ja_seg.start_time,
-                end_time=ja_seg.end_time,
+                input_wav=args.reference_voice,
+                start_time=ref_seg.start_time,
+                end_time=ref_seg.end_time,
                 output_path=ref_audio_path,
                 target_sr=output_sr,
             )
@@ -454,24 +474,25 @@ def main():
                 generated_samples = run_tts_inference(
                     resources=resources,
                     reference_speech=ref_audio_path,
-                    reference_text=ja_seg.text,
-                    target_text=en_seg.text,
+                    reference_text=ref_seg.text,
+                    target_text=tgt_seg.text,
                     target_duration=target_duration,
                     num_samples=args.num_samples,
                 )
 
-                # Select best sample using Whisper transcription + similarity
+                # Select best sample: MFCC (top 5) -> Levenshtein (best 1)
                 print(f"  Selecting best from {len(generated_samples)} samples...")
                 best_audio, best_idx, best_transcript, best_similarity, best_rms = select_best_sample(
                     samples=generated_samples,
-                    target_text=en_seg.text,
+                    target_text=tgt_seg.text,
+                    reference_audio_path=ref_audio_path,
                     sample_rate=output_sr,
                     whisper_device=resources["whisper_device"],
                     tmpdir=tmpdir,
                 )
 
                 # Place in output buffer
-                start_sample = int(ja_seg.start_time * output_sr)
+                start_sample = int(ref_seg.start_time * output_sr)
                 end_sample = start_sample + len(best_audio)
 
                 # Handle overflow
@@ -490,11 +511,11 @@ def main():
                 continue
 
     # Save output
-    output_dir = os.path.dirname(args.output_wav)
+    output_dir = os.path.dirname(args.output_voice)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    sf.write(args.output_wav, output_buffer, output_sr, subtype='PCM_16')
-    print(f"\n[Info] Saved output to {args.output_wav}")
+    sf.write(args.output_voice, output_buffer, output_sr, subtype='PCM_16')
+    print(f"\n[Info] Saved output to {args.output_voice}")
     print(f"[Info] Output: {output_sr}Hz, 16bit, mono, {len(output_buffer)/output_sr:.2f}s")
 
 
