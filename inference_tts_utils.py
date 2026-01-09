@@ -128,7 +128,12 @@ def normalize_text_with_lang(text: str, lang: Optional[str]) -> Tuple[str, Optio
     if resolved_lang is None:
         resolved_lang = detect_language(text)
     if resolved_lang and resolved_lang.startswith("ja"):
+        text = text.replace('\n', '')
         return _normalize_japanese_text(text), resolved_lang
+    elif resolved_lang and resolved_lang.startswith("zh"):
+        text = text.replace('\n', '')
+    elif resolved_lang and resolved_lang.startswith("en"):
+        text = text.replace('\n', ' ')
     return text, resolved_lang
 
 

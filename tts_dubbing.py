@@ -6,11 +6,13 @@ using voice cloning from the original Japanese audio.
 
 Usage:
     python srt_dubbing.py \
-        --ja_srt inputs/0305_ja.srt \
-        --en_srt inputs/0305_en.srt \
-        --input_wav inputs/0305_vocals.wav \
-        --output_wav outputs/0305_dubbed.wav
+        --reference_srt inputs/0305_ja.srt \
+        --reference_voice inputs/0305_vocals.wav \
+        --target_srt inputs/0305_en.srt \
+        --output_voice outputs/0305_dubbed.wav
 """
+import warnings
+warnings.simplefilter('ignore', UserWarning)
 
 import argparse
 import os
@@ -29,6 +31,7 @@ from inference_tts_utils import (
     inference_one_sample,
     normalize_text_with_lang,
     transcribe_audio,
+    get_whisper_model
 )
 from similarity_and_distance import find_similarity_and_distance
 from compare_audio_features import compare_with_reference_set
@@ -65,7 +68,7 @@ def parse_timestamp(ts: str) -> float:
 
 def parse_srt(filepath: str) -> List[SRTSegment]:
     """Parse SRT file and return list of segments."""
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, 'r', encoding='utf-8-sig') as f:
         content = f.read()
 
     segments = []
@@ -232,7 +235,7 @@ def select_best_sample(
     sample_rate: int,
     whisper_device: str = "cuda",
     tmpdir: str = "/tmp",
-    top_k_voice: int = 5,
+    top_k_voice: int = 8,
 ) -> tuple:
     """
     複数の生成サンプルから最適なものを選択する（2段階フィルタリング）。
@@ -268,7 +271,7 @@ def select_best_sample(
             "rms": rms,
         })
 
-        print(f"    Sample {i+1}: mfcc_distance={mfcc_distance:.4f}, rms={rms:.4f}")
+        # print(f"    Sample {i+1}: mfcc_distance={mfcc_distance:.4f}, rms={rms:.4f}")
 
     # Sort by MFCC distance (ascending) and select top_k_voice
     voice_candidates.sort(key=lambda c: c["mfcc_distance"])
@@ -295,8 +298,8 @@ def select_best_sample(
             "similarity": similarity,
         })
 
-        print(f"    Sample {c['index']+1}: similarity={similarity:.3f}")
-        print(f"             transcript: {transcript[:60]}...")
+        print(f"    Sample {c['index']+1}: similarity={similarity:.3f} mfcc_distance={c['mfcc_distance']:.4f}")
+        print(f"             transcript: {transcript}")
 
     # Sort by Levenshtein similarity (descending)
     text_candidates.sort(key=lambda c: -c["similarity"])
@@ -407,7 +410,7 @@ def main():
     parser.add_argument("--xcodec2_sample_rate", type=int, default=16000, help="XCodec2 sample rate")
     parser.add_argument("--cpu_codec", action="store_true", help="Run XCodec2 on CPU")
     parser.add_argument("--cpu_whisper", action="store_true", help="Run Whisper on CPU")
-    parser.add_argument("--num_samples", type=int, default=10, help="Number of samples to generate per segment")
+    parser.add_argument("--num_samples", type=int, default=32, help="Number of samples to generate per segment")
     args = parser.parse_args()
 
     # Set default output_wav if not provided
@@ -421,9 +424,10 @@ def main():
     tgt_segments = parse_srt(args.target_srt)
 
     print(f"[Info] Found {len(ref_segments)} Reference segments, {len(tgt_segments)} Target segments")
+    assert len(ref_segments) == len(tgt_segments), "Segment count mismatch!"
 
-    if len(ref_segments) != len(tgt_segments):
-        print(f"[Warning] Segment count mismatch! Using minimum: {min(len(ref_segments), len(tgt_segments))}")
+    # if len(ref_segments) != len(tgt_segments):
+    #     print(f"[Warning] Segment count mismatch! Using minimum: {min(len(ref_segments), len(tgt_segments))}")
 
     num_segments = min(len(ref_segments), len(tgt_segments))
 
@@ -437,6 +441,9 @@ def main():
     )
 
     output_sr = args.xcodec2_sample_rate  # 16000
+    
+    model, _ = get_whisper_model(resources["whisper_device"])
+    model.eval()
 
     # Calculate total duration
     total_duration = max(seg.end_time for seg in ref_segments[:num_segments])
@@ -451,11 +458,15 @@ def main():
         for i in range(num_segments):
             ref_seg = ref_segments[i]
             tgt_seg = tgt_segments[i]
+            
+            if ref_seg.start_time != tgt_seg.start_time or ref_seg.end_time != tgt_seg.end_time:
+                print(f"[Warning] Segment time stamp mismatch! passed: {i+1}")
+                continue
 
             print(f"\n[Info] Processing segment {i+1}/{num_segments}")
             print(f"  Time: {ref_seg.start_time:.2f}s - {ref_seg.end_time:.2f}s")
-            print(f"  REF: {ref_seg.text[:50]}...")
-            print(f"  TGT: {tgt_seg.text[:50]}...")
+            print(f"  REF: {ref_seg.text.replace(chr(10), '↵')}")
+            print(f"  TGT: {tgt_seg.text.replace(chr(10), '↵')}")
 
             target_duration = ref_seg.end_time - ref_seg.start_time
 
@@ -511,9 +522,9 @@ def main():
                 continue
 
     # Save output
-    output_dir = os.path.dirname(args.output_voice)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    # output_dir = os.path.dirname(args.output_voice)
+    # if output_dir:
+    #     os.makedirs(output_dir, exist_ok=True)
     sf.write(args.output_voice, output_buffer, output_sr, subtype='PCM_16')
     print(f"\n[Info] Saved output to {args.output_voice}")
     print(f"[Info] Output: {output_sr}Hz, 16bit, mono, {len(output_buffer)/output_sr:.2f}s")
